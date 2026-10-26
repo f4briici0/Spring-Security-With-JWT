@@ -1,0 +1,317 @@
+{
+  "id": "5095ec39-1c48-4eee-bcf7-d3d7776f1618",
+  "title": "Spring Security + Jwt + Refresh Token",
+  "date": "28 de jul. de 2026",
+  "tags": [
+    "Java",
+    "SpringBoot",
+    "Security",
+    "Jwt",
+    "AccessTokenAndRefreshToken",
+    "OAuth2ResourceServer",
+    "RSA",
+    "ExceptionHandler"
+  ],
+  "summary": "Implementação de token JWT rotativo com Spring Security, OAuth2ResourceServer e tratamento global de exceções customizadas.",
+  "content": [
+    {
+      "type": "heading",
+      "text": "Implementação de token JWT rotativo com Spring Security e OAuth2ResourceServer.\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "Neste artigo, aprenderemos a implementar a autenticação baseada em tokens **JWT rotativos** utilizando o **Spring Security**, com a aplicação atuando como um servidor de recursos por meio do **OAuth2ResourceServer**. Além disso, utilizaremos criptografia assimétrica (**RSA**) para assinar e validar os tokens, garantindo maior segurança na autenticação e autorização das requisições, acompanhado de tratamento centralizado de erros com **exceções customizadas**."
+    },
+    {
+      "type": "paragraph",
+      "text": "Este artigo foi elaborado com base em uma aula ministrada por uma professora e tem como objetivo servir como material de consulta para estudos. O conteúdo também inclui algumas adaptações e observações pessoais.\n\nO link para a aula original está disponível abaixo."
+    },
+    {
+      "type": "reference",
+      "title": "Aulão: Spring Security 6 + JWT! (Giuliana Bezerra)",
+      "url": "https://www.youtube.com/watch?v=kEJ8a1w4a2Q"
+    },
+    {
+      "type": "paragraph",
+      "text": "Você também pode acessar o projeto completo criado por mim no github [(clique aqui)](https://github.com/f4briici0/Spring-Security-JWT)"
+    },
+    {
+      "type": "heading",
+      "text": "Início\n\n1. Configurações do projeto\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "Para começar, precisamos gerar um par de chaves assimétricas RSA. Neste artigo, utilizaremos o [openSSL](https://openssl-library.org/source/) para gerá-las.\n\nVamos começar gerando uma chave privada de 2048 bits:\n`openssl genrsa -out app.key 2048`\n\nAgora, a partir da chave privada, vamos gerar a chave pública:\n`openssl rsa -in app.key -pubout -out app.pub`\n\nNeste caso, geraremos as chaves no diretório `src/main/resources/keys`\n\nPara facilitar, caso o OpenSSL já esteja configurado nas variáveis de ambiente, execute o comando abaixo na raiz do projeto:"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "",
+      "code": "if not exist src\\main\\resources\\keys mkdir src\\main\\resources\\keys && openssl genrsa -out src\\main\\resources\\keys\\app.key 2048 && openssl rsa -in src\\main\\resources\\keys\\app.key -pubout -out src\\main\\resources\\keys\\app.pub"
+    },
+    {
+      "type": "paragraph",
+      "text": "Aqui estão algumas dependências necessárias para o projeto:"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "pom.xml",
+      "code": "Spring Data JPA\nSpring Security\nOAuth2 Resource Server\nSpring Validation\nSpring Web MVC\nPostgreSQL Driver"
+    },
+    {
+      "type": "paragraph",
+      "text": "O arquivo `application.properties` ficará da seguinte forma:"
+    },
+    {
+      "type": "code",
+      "language": "properties",
+      "filename": "application.properties",
+      "code": "spring.application.name=security\nserver.port=8080\n\nspring.datasource.url=jdbc:postgresql://localhost:5432/security\nspring.datasource.username={db_username}\nspring.datasource.password={db_password}\nspring.datasource.driver-class-name=org.postgresql.Driver\n\nspring.jpa.hibernate.ddl-auto=update\nspring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect\n\njwt.private.key=classpath:keys/app.key\njwt.public.key=classpath:keys/app.pub"
+    },
+    {
+      "type": "heading",
+      "text": "2. Criando pacotes da aplicação"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "packages",
+      "code": "config\ncontroller\ndto\nentity\nexception\nrepositories\nsecurity\nservice"
+    },
+    {
+      "type": "heading",
+      "text": "3. Criando entity"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "entity/User.java",
+      "code": "package com.fabricio.security.entity;\n\nimport jakarta.persistence.*;\n\nimport java.util.UUID;\n\n@Entity\n@Table(name = \"TB_USERS\")\npublic class User {\n    @Id\n    @GeneratedValue(strategy = GenerationType.UUID)\n    private UUID id;\n    private String username;\n    private String password;\n\n    @Enumerated(EnumType.STRING)\n    private UserRole userRole;\n\n    public enum UserRole{\n        USER, ADMIN\n    }\n\n    public User() {\n    }\n\n    public UUID getId() {\n        return id;\n    }\n\n    public void setId(UUID id) {\n        this.id = id;\n    }\n\n    public String getUsername() {\n        return username;\n    }\n\n    public void setUsername(String username) {\n        this.username = username;\n    }\n\n    public String getPassword() {\n        return password;\n    }\n\n    public void setPassword(String password) {\n        this.password = password;\n    }\n\n    public UserRole getUserRole() {\n        return userRole;\n    }\n\n    public void setUserRole(UserRole userRole) {\n        this.userRole = userRole;\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "entity/RefreshToken.java",
+      "code": "package com.fabricio.security.entity;\n\nimport jakarta.persistence.*;\n\nimport java.time.Instant;\nimport java.util.UUID;\n\n@Entity\n@Table(name = \"TB_REFRESH_TOKENS\")\npublic class RefreshToken {\n    @Id\n    @GeneratedValue(strategy = GenerationType.UUID)\n    private UUID id;\n\n    private String token;\n\n    private Instant expiryDate;\n\n    @OneToOne\n    @JoinColumn(name = \"user_id\", referencedColumnName = \"id\")\n    private User user;\n\n    public RefreshToken() {\n    }\n\n    public RefreshToken(UUID id) {\n        this.id = id;\n    }\n\n    public UUID getId() {\n        return id;\n    }\n\n    public void setId(UUID id) {\n        this.id = id;\n    }\n\n    public String getToken() {\n        return token;\n    }\n\n    public void setToken(String token) {\n        this.token = token;\n    }\n\n    public Instant getExpiryDate() {\n        return expiryDate;\n    }\n\n    public void setExpiryDate(Instant expiryDate) {\n        this.expiryDate = expiryDate;\n    }\n\n    public User getUser() {\n        return user;\n    }\n\n    public void setUser(User user) {\n        this.user = user;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**User ->** Entidade representando os usuários do sistema, contendo identificador UUID, credenciais e cargo (USER ou ADMIN).\n**RefreshToken ->** Entidade que armazena o token rotativo associado a um usuário e sua data de expiração."
+    },
+    {
+      "type": "heading",
+      "text": "4. Criando repositories"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "repositories/UserRepository.java",
+      "code": "package com.fabricio.security.repositories;\n\nimport com.fabricio.security.entity.User;\nimport org.springframework.data.jpa.repository.JpaRepository;\nimport org.springframework.stereotype.Repository;\n\nimport java.util.Optional;\nimport java.util.UUID;\n\n@Repository\npublic interface UserRepository extends JpaRepository<User, UUID> {\n    Optional<User> findByUsername(String username);\n    boolean existsByUsername(String username);\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "repositories/RefreshTokenRepository.java",
+      "code": "package com.fabricio.security.repositories;\n\nimport com.fabricio.security.entity.RefreshToken;\nimport com.fabricio.security.entity.User;\nimport org.springframework.data.jpa.repository.JpaRepository;\nimport org.springframework.stereotype.Repository;\n\nimport java.util.Optional;\nimport java.util.UUID;\n\n@Repository\npublic interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID> {\n    Optional<RefreshToken> findByToken(String token);\n\n    Optional<RefreshToken> findByUser(User user);\n\n    void deleteByUser_Id(UUID userId);\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**UserRepository ->** Métodos para busca de usuário por username e verificação prévia de existência.\n**RefreshTokenRepository ->** Métodos para busca do token, busca por usuário e exclusão por ID de usuário."
+    },
+    {
+      "type": "heading",
+      "text": "5. Criando DTO"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "dto/RegisterRequestDTO.java",
+      "code": "package com.fabricio.security.dto;\n\nimport jakarta.validation.constraints.NotBlank;\nimport jakarta.validation.constraints.Size;\n\npublic record RegisterRequestDTO(\n        @NotBlank(message = \"O campo username não pode estar vazio.\")\n        @Size(min = 3, max = 50, message = \"O username deve ter entre 3 e 50 caracteres.\")\n        String username,\n\n        @NotBlank(message = \"O campo password não pode estar vazio.\")\n        @Size(min = 6, max = 64, message = \"A senha deve ter entre 6 e 64 caracteres.\")\n        String password\n){}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "dto/LoginRequestDTO.java",
+      "code": "package com.fabricio.security.dto;\n\nimport jakarta.validation.constraints.NotBlank;\n\npublic record LoginRequestDTO (\n        @NotBlank(message = \"O campo username não pode estar vazio.\")\n        String username,\n        @NotBlank(message = \"O campo password não pode estar vazio.\")\n        String password\n){}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "dto/ChangeUserRoleDTO.java",
+      "code": "package com.fabricio.security.dto;\n\nimport com.fabricio.security.entity.User;\nimport jakarta.validation.constraints.NotBlank;\nimport jakarta.validation.constraints.NotNull;\n\npublic record ChangeUserRoleDTO(\n        @NotBlank(message = \"O campo username não pode estar vazio.\")\n        String username,\n        @NotNull(message = \"O campo newRole não pode ser nulo.\")\n        User.UserRole newRole\n)\n{}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "dto/LoginResponseDTO.java",
+      "code": "package com.fabricio.security.dto;\n\npublic record LoginResponseDTO (\n        String accessToken,\n        String refreshToken\n){}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "dto/TokenRefreshRequestDTO.java",
+      "code": "package com.fabricio.security.dto;\n\nimport jakarta.validation.constraints.NotBlank;\n\npublic record TokenRefreshRequestDTO(\n        @NotBlank(message = \"O Refresh Token é obrigatório\")\n        String refreshToken\n) { }"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "dto/StandardErrorDTO.java",
+      "code": "package com.fabricio.security.dto;\n\nimport java.time.Instant;\n\npublic record StandardErrorDTO(\n        Instant timestamp,\n        Integer status,\n        String error,\n        String message,\n        String path\n) {\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**RegisterRequestDTO & LoginRequestDTO ->** Validação de entrada para cadastro e autenticação de usuários com Bean Validation.\n**ChangeUserRoleDTO ->** Dados para alteração de cargo administrativo.\n**LoginResponseDTO ->** Retorno com o Access Token (JWT) e o Refresh Token.\n**StandardErrorDTO ->** Estrutura padrão para respostas de erro e exceções tratadas da API."
+    },
+    {
+      "type": "heading",
+      "text": "6. Criando autenticação de usuário (Security)"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "security/UserAuthenticated.java",
+      "code": "package com.fabricio.security.security;\n\nimport com.fabricio.security.entity.User;\nimport org.jspecify.annotations.Nullable;\nimport org.springframework.security.core.GrantedAuthority;\nimport org.springframework.security.core.authority.SimpleGrantedAuthority;\nimport org.springframework.security.core.userdetails.UserDetails;\n\nimport java.util.Collection;\nimport java.util.List;\n\npublic class UserAuthenticated implements UserDetails {\n    private final User user;\n\n    public UserAuthenticated(User user) {\n        this.user = user;\n    }\n\n    @Override\n    public Collection<? extends GrantedAuthority> getAuthorities() {\n        return List.of(\n                new SimpleGrantedAuthority(\"ROLE_\" + user.getUserRole().name())\n        );\n    }\n\n    @Override\n    public @Nullable String getPassword() {\n        return user.getPassword();\n    }\n\n    @Override\n    public String getUsername() {\n        return user.getUsername();\n    }\n\n    @Override\n    public boolean isAccountNonExpired() {\n        return true;\n    }\n\n    @Override\n    public boolean isAccountNonLocked() {\n        return true;\n    }\n\n    @Override\n    public boolean isCredentialsNonExpired() {\n        return true;\n    }\n\n    @Override\n    public boolean isEnabled() {\n        return true;\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "security/UserDetailsServiceImpl.java",
+      "code": "package com.fabricio.security.security;\n\nimport com.fabricio.security.repositories.UserRepository;\nimport org.springframework.security.core.userdetails.UserDetails;\nimport org.springframework.security.core.userdetails.UserDetailsService;\nimport org.springframework.security.core.userdetails.UsernameNotFoundException;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class UserDetailsServiceImpl implements UserDetailsService {\n    private UserRepository userRepository;\n\n    public UserDetailsServiceImpl(UserRepository userRepository) {\n        this.userRepository = userRepository;\n    }\n\n    @Override\n    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {\n        return userRepository.findByUsername(username)\n                .map(UserAuthenticated::new)\n                .orElseThrow(\n                        () -> new UsernameNotFoundException(\"Usuário não encontrado: \" + username)\n                );\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**UserAuthenticated ->** Implementa o UserDetails do Spring Security, adaptando a entidade User e convertendo o cargo para o padrão esperado pelo Spring (`ROLE_USER` ou `ROLE_ADMIN`).\n**UserDetailsServiceImpl ->** Implementa o UserDetailsService para consultar o usuário no banco de dados através do UserRepository durante o processo de autenticação."
+    },
+    {
+      "type": "heading",
+      "text": "7. Criando exceções customizadas e GlobalExceptionHandler"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "exception/UserAlreadyExistsException.java",
+      "code": "package com.fabricio.security.exception;\n\n// A herança aqui é fundamental!\npublic class UserAlreadyExistsException extends RuntimeException {\n    public UserAlreadyExistsException(String message) {\n        super(message);\n    }\n\n    public UserAlreadyExistsException(String message, Throwable cause) {\n        super(message, cause);\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "exception/UserNotFoundException.java",
+      "code": "package com.fabricio.security.exception;\n\npublic class UserNotFoundException extends RuntimeException {\n    public UserNotFoundException(String message) {\n        super(message);\n    }\n\n    public UserNotFoundException(String message, Throwable cause) {\n        super(message, cause);\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "exception/RefreshTokenNotFoundException.java",
+      "code": "package com.fabricio.security.exception;\n\npublic class RefreshTokenNotFoundException extends RuntimeException {\n    public RefreshTokenNotFoundException(String message) {\n        super(message);\n    }\n\n    public RefreshTokenNotFoundException(String message, Throwable cause) {\n        super(message, cause);\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "exception/RefreshTokenExpiredException.java",
+      "code": "package com.fabricio.security.exception;\n\npublic class RefreshTokenExpiredException extends RuntimeException {\n    public RefreshTokenExpiredException(String message) {\n        super(message);\n    }\n\n    public RefreshTokenExpiredException(String message, Throwable cause) {\n        super(message, cause);\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "exception/GlobalExceptionHandler.java",
+      "code": "package com.fabricio.security.exception;\n\nimport com.fabricio.security.dto.StandardErrorDTO;\nimport jakarta.servlet.http.HttpServletRequest;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.http.converter.HttpMessageNotReadableException;\nimport org.springframework.security.access.AccessDeniedException;\nimport org.springframework.security.authentication.BadCredentialsException;\nimport org.springframework.validation.FieldError;\nimport org.springframework.web.bind.MethodArgumentNotValidException;\nimport org.springframework.web.bind.annotation.ExceptionHandler;\nimport org.springframework.web.bind.annotation.RestControllerAdvice;\n\nimport java.time.Instant;\nimport java.util.stream.Collectors;\n\n@RestControllerAdvice\npublic class GlobalExceptionHandler {\n\n    @ExceptionHandler(UserAlreadyExistsException.class)\n    public ResponseEntity<StandardErrorDTO> handleUserAlreadyExists(UserAlreadyExistsException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.CONFLICT.value(),\n                \"Conflict\",\n                e.getMessage(),\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);\n    }\n\n    @ExceptionHandler(UserNotFoundException.class)\n    public ResponseEntity<StandardErrorDTO> handleUserNotFound(UserNotFoundException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.NOT_FOUND.value(),\n                \"Not Found\",\n                e.getMessage(),\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);\n    }\n\n    @ExceptionHandler(RefreshTokenNotFoundException.class)\n    public ResponseEntity<StandardErrorDTO> handleRefreshTokenNotFound(RefreshTokenNotFoundException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.NOT_FOUND.value(),\n                \"Not Found\",\n                e.getMessage(),\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);\n    }\n\n    @ExceptionHandler(RefreshTokenExpiredException.class)\n    public ResponseEntity<StandardErrorDTO> handleRefreshTokenExpired(RefreshTokenExpiredException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.UNAUTHORIZED.value(),\n                \"Unauthorized\",\n                e.getMessage(),\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);\n    }\n\n    @ExceptionHandler(BadCredentialsException.class)\n    public ResponseEntity<StandardErrorDTO> handleBadCredentials(BadCredentialsException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.UNAUTHORIZED.value(),\n                \"Unauthorized\",\n                \"Credenciais inválidas: usuário ou senha incorretos.\",\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);\n    }\n\n    @ExceptionHandler(AccessDeniedException.class)\n    public ResponseEntity<StandardErrorDTO> handleAccessDenied(AccessDeniedException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.FORBIDDEN.value(),\n                \"Forbidden\",\n                \"Acesso negado: você não tem permissão para acessar este recurso.\",\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);\n    }\n\n    @ExceptionHandler(MethodArgumentNotValidException.class)\n    public ResponseEntity<StandardErrorDTO> handleMethodArgumentNotValid(MethodArgumentNotValidException e, HttpServletRequest request) {\n        String errorMessage = e.getBindingResult().getFieldErrors().stream()\n                .map(FieldError::getDefaultMessage)\n                .collect(Collectors.joining(\"; \"));\n\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.BAD_REQUEST.value(),\n                \"Bad Request\",\n                errorMessage,\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);\n    }\n\n    @ExceptionHandler(HttpMessageNotReadableException.class)\n    public ResponseEntity<StandardErrorDTO> handleHttpMessageNotReadable(HttpMessageNotReadableException e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.BAD_REQUEST.value(),\n                \"Bad Request\",\n                \"Corpo da requisição inválido ou malformado.\",\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);\n    }\n\n    @ExceptionHandler(Exception.class)\n    public ResponseEntity<StandardErrorDTO> handleGenericException(Exception e, HttpServletRequest request) {\n        StandardErrorDTO error = new StandardErrorDTO(\n                Instant.now(),\n                HttpStatus.INTERNAL_SERVER_ERROR.value(),\n                \"Internal Server Error\",\n                \"Ocorreu um erro interno no servidor.\",\n                request.getRequestURI()\n        );\n        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**UserAlreadyExistsException ->** Lançada no registro ao tentar cadastrar username já existente (409 Conflict).\n**UserNotFoundException ->** Lançada ao não encontrar o usuário no banco de dados (404 Not Found).\n**RefreshTokenNotFoundException ->** Lançada caso o token de refresh não exista no banco (404 Not Found).\n**RefreshTokenExpiredException ->** Lançada caso o token de refresh tenha passado da validade (401 Unauthorized).\n**GlobalExceptionHandler ->** Centraliza o tratamento de erros com @RestControllerAdvice, capturando exceções customizadas, erros de validação (@Valid) e falhas de autenticação do Spring Security, devolvendo um JSON padronizado com StandardErrorDTO."
+    },
+    {
+      "type": "heading",
+      "text": "8. Criando services"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "service/JwtService.java",
+      "code": "package com.fabricio.security.service;\n\nimport org.springframework.security.core.Authentication;\nimport org.springframework.security.core.GrantedAuthority;\nimport org.springframework.security.oauth2.jwt.JwtClaimsSet;\nimport org.springframework.security.oauth2.jwt.JwtEncoder;\nimport org.springframework.security.oauth2.jwt.JwtEncoderParameters;\nimport org.springframework.stereotype.Service;\n\nimport java.time.Instant;\nimport java.util.List;\n\n@Service\npublic class JwtService {\n    private JwtEncoder jwtEncoder;\n\n    public JwtService(JwtEncoder jwtEncoder) {\n        this.jwtEncoder = jwtEncoder;\n    }\n\n    public String generateToken(Authentication authentication){\n        Instant now = Instant.now();\n        long expire = 3600L;\n\n        List<String> roles = authentication.getAuthorities().stream()\n                .map(GrantedAuthority::getAuthority)\n                .toList();\n\n        var claims = JwtClaimsSet.builder()\n                .issuer(\"SPRING-SECURITY-JWT\")\n                .issuedAt(now)\n                .expiresAt(now.plusSeconds(expire))\n                .claim(\"roles\", roles)\n                .subject(authentication.getName())\n                .build();\n\n        return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**JwtService ->** Gerando o JWT com usuário, cargos, data de emissão e expiração, utilizando o JwtEncoder."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "service/RefreshTokenService.java",
+      "code": "package com.fabricio.security.service;\n\nimport com.fabricio.security.entity.RefreshToken;\nimport com.fabricio.security.exception.RefreshTokenExpiredException;\nimport com.fabricio.security.exception.UserNotFoundException;\nimport com.fabricio.security.repositories.RefreshTokenRepository;\nimport com.fabricio.security.repositories.UserRepository;\nimport org.springframework.stereotype.Service;\nimport org.springframework.transaction.annotation.Transactional;\n\nimport java.time.Instant;\nimport java.util.Optional;\nimport java.util.UUID;\n\n@Service\npublic class RefreshTokenService {\n\n    private final RefreshTokenRepository refreshTokenRepository;\n    private final UserRepository userRepository;\n\n    private final long REFRESH_DURATION_SECONDS = 86400L;\n\n    public RefreshTokenService(RefreshTokenRepository refreshTokenRepository, UserRepository userRepository) {\n        this.refreshTokenRepository = refreshTokenRepository;\n        this.userRepository = userRepository;\n    }\n\n    public Optional<RefreshToken> findByToken(String token) {\n        return refreshTokenRepository.findByToken(token);\n    }\n\n    @Transactional\n    public RefreshToken createRefreshToken(String username) {\n        var user = userRepository.findByUsername(username)\n                .orElseThrow(() -> new UserNotFoundException(\"Usuário não encontrado com o username: \" + username));\n\n        RefreshToken refreshToken = refreshTokenRepository.findByUser(user)\n                .orElse(new RefreshToken());\n\n        refreshToken.setUser(user);\n        refreshToken.setExpiryDate(Instant.now().plusSeconds(REFRESH_DURATION_SECONDS));\n        refreshToken.setToken(UUID.randomUUID().toString());\n\n        return refreshTokenRepository.save(refreshToken);\n    }\n\n    @Transactional\n    public RefreshToken rotateRefreshToken(RefreshToken usedToken) {\n        usedToken.setExpiryDate(Instant.now().plusSeconds(REFRESH_DURATION_SECONDS));\n        usedToken.setToken(UUID.randomUUID().toString());\n\n        return refreshTokenRepository.save(usedToken);\n    }\n\n    public RefreshToken verifyExpiration(RefreshToken token) {\n        if (token.getExpiryDate().compareTo(Instant.now()) < 0) {\n            refreshTokenRepository.delete(token);\n            throw new RefreshTokenExpiredException(\"Refresh token expirou. Por favor, faça login novamente.\");\n        }\n        return token;\n    }\n\n    @Transactional\n    public void deleteByUserId(UUID userId) {\n        refreshTokenRepository.deleteByUser_Id(userId);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**RefreshTokenService ->** Criando, validando e rotacionando Refresh Tokens, controlando sua expiração e associação com o usuário."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "service/AdminService.java",
+      "code": "package com.fabricio.security.service;\n\nimport com.fabricio.security.dto.ChangeUserRoleDTO;\nimport com.fabricio.security.entity.User;\nimport com.fabricio.security.exception.UserNotFoundException;\nimport com.fabricio.security.repositories.UserRepository;\nimport jakarta.transaction.Transactional;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class AdminService {\n    private final UserRepository userRepository;\n\n    public AdminService(UserRepository userRepository) {\n        this.userRepository = userRepository;\n    }\n\n    @Transactional\n    public String changeUserRole(ChangeUserRoleDTO data) {\n        User entity = userRepository.findByUsername(data.username()).orElseThrow(\n                () -> new UserNotFoundException(\"Usuário não encontrado com o username: \" + data.username())\n        );\n        entity.setUserRole(data.newRole());\n        userRepository.save(entity);\n        return \"Cargo alterado com sucesso!\";\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "service/AuthenticationService.java",
+      "code": "package com.fabricio.security.service;\n\nimport com.fabricio.security.dto.LoginRequestDTO;\nimport com.fabricio.security.dto.LoginResponseDTO;\nimport com.fabricio.security.dto.RegisterRequestDTO;\nimport com.fabricio.security.dto.TokenRefreshRequestDTO;\nimport com.fabricio.security.entity.RefreshToken;\nimport com.fabricio.security.entity.User;\nimport com.fabricio.security.exception.RefreshTokenNotFoundException;\nimport com.fabricio.security.exception.UserAlreadyExistsException;\nimport com.fabricio.security.repositories.UserRepository;\nimport com.fabricio.security.security.UserAuthenticated;\nimport jakarta.transaction.Transactional;\nimport org.springframework.security.authentication.AuthenticationManager;\nimport org.springframework.security.authentication.UsernamePasswordAuthenticationToken;\nimport org.springframework.security.core.Authentication;\nimport org.springframework.security.crypto.password.PasswordEncoder;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class AuthenticationService {\n    private final JwtService jwtService;\n    private final UserRepository userRepository;\n    private final AuthenticationManager authenticationManager;\n    private final PasswordEncoder passwordEncoder;\n    private final RefreshTokenService refreshTokenService;\n\n    public AuthenticationService(JwtService jwtService, UserRepository userRepository, AuthenticationManager authenticationManager, PasswordEncoder passwordEncoder, RefreshTokenService refreshTokenService) {\n        this.jwtService = jwtService;\n        this.userRepository = userRepository;\n        this.authenticationManager = authenticationManager;\n        this.passwordEncoder = passwordEncoder;\n        this.refreshTokenService = refreshTokenService;\n    }\n\n    @Transactional\n    public String register(RegisterRequestDTO registerRequestDTO){\n        if (userRepository.existsByUsername(registerRequestDTO.username())){\n            throw new UserAlreadyExistsException(\"Usuário já existente!\");\n        }\n\n        User entity = new User();\n        entity.setUsername(registerRequestDTO.username());\n        entity.setPassword(passwordEncoder.encode(registerRequestDTO.password()));\n        entity.setUserRole(User.UserRole.USER);\n        userRepository.save(entity);\n\n        return \"Usuário criado com sucesso!\";\n    }\n\n    public LoginResponseDTO login(LoginRequestDTO data){\n        Authentication authentication = authenticationManager.authenticate(\n                new UsernamePasswordAuthenticationToken(data.username(), data.password())\n        );\n\n        String accessToken = jwtService.generateToken(authentication);\n        RefreshToken refreshToken = refreshTokenService.createRefreshToken(data.username());\n\n        return new LoginResponseDTO(accessToken, refreshToken.getToken());\n    }\n\n    public LoginResponseDTO refreshToken(TokenRefreshRequestDTO request) {\n        return refreshTokenService.findByToken(request.refreshToken())\n                .map(refreshTokenService::verifyExpiration) // Verifica a Validade do Token\n                .map(oldToken -> {\n                    RefreshToken newToken = refreshTokenService.rotateRefreshToken(oldToken);\n\n                    var user = newToken.getUser();\n                    var userDetails = new UserAuthenticated(user); // Cria um objeto de usuário autenticado baseado no token antigo\n\n                    Authentication authentication = new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());\n                    String newAccessToken = jwtService.generateToken(authentication);\n\n                    return new LoginResponseDTO(newAccessToken, newToken.getToken());\n                })\n                .orElseThrow(() -> new RefreshTokenNotFoundException(\"Refresh token inválido ou não encontrado!\"));\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "**register  ->** Criando um usuário com verificação prévia e lançando UserAlreadyExistsException se já existir. Transformando a senha em um hash com o BCrypt.\n**login  -> ** Utilizando usuário e senha para autenticar via AuthenticationManager e retornando o par Access Token (JWT) e Refresh Token.\n**refreshToken -> ** Verificando a validade do Refresh Token, gerando um novo Access Token (JWT) e rotacionando o Refresh Token antigo por um novo."
+    },
+    {
+      "type": "paragraph",
+      "text": " "
+    },
+    {
+      "type": "heading",
+      "text": "9. Criando rotas de testes e autenticação"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "controller/TestRoutesController.java",
+      "code": "package com.fabricio.security.controller;\n\nimport org.springframework.security.access.prepost.PreAuthorize;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\npublic class TestRoutesController {\n    @GetMapping(\"/public\")\n    public String publicRoute(){\n        return \"This is a PUBLIC route!\";\n    }\n\n    @GetMapping(\"/private\")\n    public String privateRoute(){\n        return \"This is a PRIVATE route!\";\n    }\n\n    @GetMapping(\"/admin\")\n    public String adminRoute(){\n        return \"This is a ADMIN route!\";\n    }\n\n    @PreAuthorize(\"hasRole('ADMIN')\")\n    @GetMapping(\"/admin/test\")\n    public String adminTest(){\n        return \"This is a ADMIN ROUTE WITH PRE AUTHORIZE route!\";\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Utilizaremos essas rotas para testar rotas públicas e rotas privadas protegidas por cargo de usuário (ROLE_ADMIN ou autenticado)."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "controller/AdminController.java",
+      "code": "package com.fabricio.security.controller;\n\nimport com.fabricio.security.dto.ChangeUserRoleDTO;\nimport com.fabricio.security.service.AdminService;\nimport jakarta.validation.Valid;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.security.access.prepost.PreAuthorize;\nimport org.springframework.web.bind.annotation.PutMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/admin\")\npublic class AdminController {\n    private final AdminService adminService;\n\n    public AdminController(AdminService adminService) {\n        this.adminService = adminService;\n    }\n\n    @PutMapping(\"/change-role\")\n    @PreAuthorize(\"hasRole('ADMIN')\")\n    public ResponseEntity<String> changeUserRole(@RequestBody @Valid ChangeUserRoleDTO data){\n        return ResponseEntity.status(HttpStatus.OK).body(adminService.changeUserRole(data));\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Utilizaremos a rota `/admin/change-role` para atualizar o cargo de um usuário. Note que com o `@PreAuthorize(\"hasRole('ADMIN')\")` somente quem tem cargo de **ADMIN** pode acessar essa rota."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "controller/AuthenticationController.java",
+      "code": "package com.fabricio.security.controller;\n\nimport com.fabricio.security.dto.LoginRequestDTO;\nimport com.fabricio.security.dto.LoginResponseDTO;\nimport com.fabricio.security.dto.RegisterRequestDTO;\nimport com.fabricio.security.dto.TokenRefreshRequestDTO;\nimport com.fabricio.security.service.AuthenticationService;\nimport jakarta.validation.Valid;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.*;\n\n@RestController\n@RequestMapping(\"/auth\")\npublic class AuthenticationController {\n    private AuthenticationService authenticationService;\n\n    public AuthenticationController(AuthenticationService authenticationService) {\n        this.authenticationService = authenticationService;\n    }\n\n    @PostMapping(\"/register\")\n    public ResponseEntity<String> register(@RequestBody @Valid RegisterRequestDTO data){\n        return ResponseEntity.status(HttpStatus.OK).body(\n                authenticationService.register(data)\n        );\n    }\n\n    @PostMapping(\"/login\")\n    public ResponseEntity<LoginResponseDTO> login(@RequestBody @Valid LoginRequestDTO data){\n        return ResponseEntity.status(HttpStatus.OK).body(\n                authenticationService.login(data)\n        );\n    }\n\n    @PostMapping(\"/refresh-token\")\n    public ResponseEntity<LoginResponseDTO> refreshToken(@RequestBody @Valid TokenRefreshRequestDTO data) {\n\n        return ResponseEntity\n                .status(HttpStatus.OK)\n                .body(authenticationService.refreshToken(data));\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Utilizaremos a rota `/auth` para concentrar o fluxo de autenticação e renovação de token.\n\n**POST /auth/register  ->** `{\"username\", \"password\"}` (Cadastra novo usuário)\n**POST /auth/login  ->** `{\"username\", \"password\"}` (Retorna accessToken e refreshToken)\n**POST /auth/refresh-token  ->** `{\"refreshToken\"}` (Gera novo accessToken e rotaciona o refreshToken)"
+    },
+    {
+      "type": "paragraph",
+      "text": "⠀"
+    },
+    {
+      "type": "heading",
+      "text": "10. Criando configurações."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "SecurityConfig.java",
+      "code": "package com.fabricio.security.config;\n\nimport com.nimbusds.jose.jwk.JWKSet;\nimport com.nimbusds.jose.jwk.RSAKey;\nimport com.nimbusds.jose.jwk.source.ImmutableJWKSet;\nimport org.springframework.beans.factory.annotation.Value;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.security.authentication.AuthenticationManager;\nimport org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;\nimport org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;\nimport org.springframework.security.config.annotation.web.builders.HttpSecurity;\nimport org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;\nimport org.springframework.security.config.http.SessionCreationPolicy;\nimport org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;\nimport org.springframework.security.crypto.password.PasswordEncoder;\n\nimport org.springframework.security.oauth2.jwt.*;\nimport org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;\nimport org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;\nimport org.springframework.security.web.SecurityFilterChain;\n\nimport java.security.interfaces.RSAPrivateKey;\nimport java.security.interfaces.RSAPublicKey;\n\n// TESTES\n//import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;\n//import org.springframework.security.oauth2.core.OAuth2TokenValidator;\n//import java.time.Duration;\n\n@Configuration\n@EnableWebSecurity\n@EnableMethodSecurity\npublic class SecurityConfig {\n    @Value(\"${jwt.public.key}\")\n    private RSAPublicKey publicKey;\n    @Value(\"${jwt.private.key}\")\n    private RSAPrivateKey privateKey;\n\n    @Bean\n    SecurityFilterChain securityFilterChain(HttpSecurity httpSecurity){\n        httpSecurity.csrf(crsf -> crsf.disable()\n                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))\n                .authorizeHttpRequests(auth ->\n                        auth.requestMatchers(\"/public\", \"/auth/**\").permitAll()\n\n                                .requestMatchers(\n                                        \"/v3/api-docs/**\",\n                                        \"/swagger-ui/**\",\n                                        \"/swagger-ui.html\"\n                                ).permitAll()\n\n                                .requestMatchers(\"/admin\").hasRole(\"ADMIN\")\n                                .anyRequest().authenticated()\n                )\n                .oauth2ResourceServer(oauth2 -> oauth2.jwt(\n                        jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())\n                ))\n        );\n\n        return httpSecurity.build();\n    }\n\n    @Bean\n    JwtAuthenticationConverter jwtAuthenticationConverter(){\n        JwtGrantedAuthoritiesConverter authoritiesConverter = new JwtGrantedAuthoritiesConverter();\n        authoritiesConverter.setAuthorityPrefix(\"\");\n        authoritiesConverter.setAuthoritiesClaimName(\"roles\");\n\n        JwtAuthenticationConverter authenticationConverter = new JwtAuthenticationConverter();\n        authenticationConverter.setJwtGrantedAuthoritiesConverter(authoritiesConverter);\n        return authenticationConverter;\n    }\n\n\n    @Bean\n    JwtEncoder jwtEncoder(){\n        var jwk = new RSAKey.Builder(publicKey).privateKey(privateKey).build();\n        var jwks = new ImmutableJWKSet<>(new JWKSet(jwk));\n        return new NimbusJwtEncoder(jwks);\n    }\n\n    @Bean\n    JwtDecoder jwtDecoder(){\n        return NimbusJwtDecoder.withPublicKey(publicKey).build();\n\n//        USADO PARA TESTES COM TOKEN CURTOS (3 SEGUNDOS)\n//        NimbusJwtDecoder jwtDecoder = NimbusJwtDecoder.withPublicKey(publicKey).build();\n//        OAuth2TokenValidator<Jwt> withClockSkew = new DelegatingOAuth2TokenValidator<>(\n//                new JwtTimestampValidator(Duration.ofSeconds(0))\n//        );\n//        jwtDecoder.setJwtValidator(withClockSkew);\n//        return jwtDecoder;\n    }\n\n    @Bean\n    AuthenticationManager authenticationManager(AuthenticationConfiguration configuration){\n        return configuration.getAuthenticationManager();\n    }\n\n    @Bean\n    PasswordEncoder passwordEncoder(){\n        return new BCryptPasswordEncoder();\n    }\n}"
+    }
+  ]
+}
